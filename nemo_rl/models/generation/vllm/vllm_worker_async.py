@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional, cast
 
 import ray
+from pydantic import Field
+
 import torch
 import uvicorn
 from fastapi import FastAPI
@@ -1046,6 +1048,13 @@ class VllmAsyncGenerationWorkerImpl(
                         parameter="input_tokens",
                         value=len(prompt_token_ids),
                     )
+                remaining -= request.nemo_final_answer_reserve
+                if remaining <= 0:
+                    raise VLLMValidationError(
+                        "context length leaves no room outside the reserved final-answer budget",
+                        parameter="max_tokens",
+                        value=request_max_tokens,
+                    )
                 max_tokens = min(request_max_tokens, remaining)
                 self._set_max_tokens(request, max_tokens)
 
@@ -1243,6 +1252,9 @@ class VllmAsyncGenerationWorkerImpl(
             # Ledger-authoritative token capture: the call identity the ledger
             # attaches (rollout_id, call_id, parent_call_id, prev_len, mode).
             ng_capture: Optional[dict[str, Any]] = None
+            # Kept outside sampling/template state; applied after image expansion
+            # and exact-prefix restoration, never to an estimated text length.
+            nemo_final_answer_reserve: int = Field(default=0, ge=0)
 
         # vLLM 0.25 routes both /v1/chat/completions and /tokenize through
         # OnlineRenderer.preprocess_chat, so the prefix-token override

@@ -976,6 +976,7 @@ async def test_context_overflow_returns_http_400_for_nemo_gym(monkeypatch):
             temperature=1.0,
             max_tokens=1,
             max_completion_tokens=None,
+            nemo_final_answer_reserve=0,
         ),
         MagicMock(),
     )
@@ -4201,3 +4202,36 @@ def test_async_vllm_http_client_forwards_admission_checks() -> None:
         client.check_admission(3, request_id="req-3")
 
     assert calls == [(1, None), (2, "req-2"), (3, "req-3")]
+
+
+@pytest.mark.parametrize("reserve,expected", [(0, 64), (16, 48), (64, None)])
+def test_final_answer_reserve_uses_expanded_prompt(monkeypatch, reserve, expected):
+    _, _, serving = _install_fake_vllm_openai_modules(monkeypatch)
+    worker = VllmAsyncGenerationWorkerImpl.__new__(VllmAsyncGenerationWorkerImpl)
+    worker.cfg = {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "val_temperature": 0.0,
+        "val_top_p": 1.0,
+        "vllm_cfg": {},
+    }
+    worker.llm = MagicMock(model_config="model-config", renderer="renderer")
+    worker._http_engine_client = worker.llm
+    worker._capture_calls = {}
+    worker.token_capture = None
+    worker.llm_async_engine_args = MagicMock()
+    worker.llm_async_engine_args.create_model_config.return_value = MagicMock(
+        served_model_name="model", model="path"
+    )
+    worker._setup_vllm_openai_api_server(_FakeFastAPIApp())
+    renderer = serving.instances[0].kwargs["online_renderer"]
+    renderer.model_config = types.SimpleNamespace(max_model_len=128)
+    request = types.SimpleNamespace(
+        max_tokens=128, max_completion_tokens=None, nemo_final_answer_reserve=reserve
+    )
+    if expected is None:
+        with pytest.raises(ValueError, match="reserved final-answer"):
+            renderer._clamp_max_tokens(request, 128, [18] * 64)
+    else:
+        renderer._clamp_max_tokens(request, 128, [18] * 64)
+        assert request.max_tokens == expected
