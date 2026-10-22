@@ -41,6 +41,13 @@ from typing import Any, Optional, cast
 
 import torch
 
+from nemo_rl.data.captured_media import (
+    MEDIA_VALIDATION_TAG,
+    MEDIA_VALIDATION_VERSION,
+    CapturedMediaItem,
+    MediaCaptureRejected,
+    verify_media_token_coverage,
+)
 from nemo_rl.data.multimodal_utils import PackedTensor
 from nemo_rl.data_plane import KVBatchMeta
 from nemo_rl.data_plane.schema import MASK_SAMPLE, ROUTE_PLAN_TAG, TRUNCATED
@@ -450,15 +457,45 @@ class RolloutReassembler:
         """
         if not self._capture_media:
             return None, None
+        # Gym is optional when this module is used outside token capture.
+        from nemo_gym.token_id_capture.adapters.vllm import MEDIA_SPANS_FIELD
+
         items: list[FetchedStagedCall] = []
-        for call_id, _carry_len, _generation_len in row.link_spans:
+        media_spans: list[CapturedMediaItem] = []
+        for call_id, carry_len, _generation_len in row.link_spans:
             item = fetched_by_call.get(call_id)
             if item is None:
                 return None, f"media_chain_identity:{call_id}"
+            try:
+                descriptors = (item.extras or {}).get(MEDIA_SPANS_FIELD, [])
+                if not isinstance(descriptors, list):
+                    raise MediaCaptureRejected("Media spans must be a list")
+                spans = [CapturedMediaItem.from_dict(value) for value in descriptors]
+                if bool(spans) != item.media_present:
+                    raise MediaCaptureRejected(
+                        "Media spans and tensor presence disagree"
+                    )
+                for span in spans:
+                    if (
+                        span.placeholder_offset < item.snapshot.prev_len
+                        or span.end > item.snapshot.prev_len + carry_len
+                    ):
+                        raise MediaCaptureRejected(
+                            "Media span is outside its call's prompt delta"
+                        )
+                media_spans.extend(spans)
+            except (KeyError, TypeError, ValueError) as error:
+                return None, f"invalid_media_alignment:{error}"
             if item.media_present:
                 items.append(item)
         if not items:
             return None, None
+        try:
+            # Include generated tokens, including the terminal answer that has
+            # no subsequent capture call to check it. Reject just this rollout.
+            verify_media_token_coverage(row.token_ids, media_spans)
+        except MediaCaptureRejected as error:
+            return None, f"invalid_media_alignment:{error}"
         if len({item.media_has_frames for item in items}) != 1:
             return None, "media_chain_incompatible:mixed image and video calls"
         try:
@@ -749,6 +786,9 @@ class RolloutReassembler:
             group_id=group_id,
             prompt_idx=prompt_idx,
         )
+        if self._capture_media:
+            for tag in tags:
+                tag[MEDIA_VALIDATION_TAG] = MEDIA_VALIDATION_VERSION
         if self._defer_routed_experts_to_policy:
             encoded_sizes = 0
             span_count = 0

@@ -135,6 +135,7 @@ from nemo_rl.algorithms.single_controller_utils.utils import (
     squeeze_trailing_unit_dim,
     tensor_field,
 )
+from nemo_rl.data.captured_media import require_validated_media_replay
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.data.multimodal_utils import present_multimodal_fields
 from nemo_rl.data_plane import (
@@ -1016,6 +1017,11 @@ class SingleControllerActor:
                 "Replay-buffer metadata group count does not match the "
                 "loaded TQ checkpoint metadata"
             )
+        if self._master_config.token_capture.enabled:
+            for group in groups:
+                meta = group["meta"]
+                require_validated_media_replay(meta.fields, meta.tags)
+
         restored = await self._buffer.load_state_dict(
             buffer_state,
             max_groups=self._async_cfg.max_buffered_rollouts,

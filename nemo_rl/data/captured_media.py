@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -32,7 +34,7 @@ if TYPE_CHECKING:
 
 
 class MediaCaptureRejected(ValueError):
-    """A captured call's media cannot be staged; the request is rejected before inference.
+    """Media alignment is invalid; reject the request or completed rollout.
 
     ``code`` is a stable, machine-readable reason surfaced in the HTTP 400
     body and the worker log. ``retained_media_changed`` marks a retained
@@ -63,6 +65,8 @@ class CapturedMediaItem:
     token_id: int
     embedding_spans: tuple[tuple[int, int], ...]
     imgs_sizes: tuple[tuple[int, int], ...]
+    # Absent only in pre-guard checkpoints and non-Omni test fixtures.
+    image_delimiter_ids: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -82,6 +86,12 @@ class CapturedMediaItem:
             )
         ):
             raise MediaCaptureRejected("Malformed media placeholder metadata")
+        if self.image_delimiter_ids is not None and (
+            len(self.image_delimiter_ids) != 2
+            or any(type(t) is not int or t < 0 for t in self.image_delimiter_ids)
+            or len({*self.image_delimiter_ids, self.token_id}) != 3
+        ):
+            raise MediaCaptureRejected("Invalid image delimiter token IDs")
         previous_end = self.placeholder_offset
         for start, length in self.embedding_spans:
             if (
@@ -102,6 +112,11 @@ class CapturedMediaItem:
         value = asdict(self)
         value["embedding_spans"] = [list(span) for span in self.embedding_spans]
         value["imgs_sizes"] = [list(size) for size in self.imgs_sizes]
+        value["image_delimiter_ids"] = (
+            list(self.image_delimiter_ids)
+            if self.image_delimiter_ids is not None
+            else None
+        )
         return value
 
     @classmethod
@@ -111,6 +126,8 @@ class CapturedMediaItem:
             tuple(span) for span in fields["embedding_spans"]
         )
         fields["imgs_sizes"] = tuple(tuple(size) for size in fields["imgs_sizes"])
+        if fields.get("image_delimiter_ids") is not None:
+            fields["image_delimiter_ids"] = tuple(fields["image_delimiter_ids"])
         return cls(**fields)
 
     def verify_tokens(self, tokens: list[int], *, origin: int) -> None:
@@ -139,6 +156,102 @@ class CapturedMedia:
 
     items: tuple[CapturedMediaItem, ...]
     tensors: dict[str, torch.Tensor] | None
+
+
+def verify_media_token_coverage(
+    tokens: list[int], items: Sequence[CapturedMediaItem]
+) -> None:
+    """Reject media-token IDs outside the registered embedding positions.
+
+    Inspect the exact carried sequence, not re-rendered text: a textual mention
+    may tokenize as a special token only on re-rendering. Text-only rows remain
+    supported by the learner's media-validity mask. For rows with media, Bridge
+    counts every occurrence of the media ID, so one unregistered occurrence
+    would otherwise crash the training forward pass.
+    """
+    expected: Counter[int] = Counter()
+    previous_end = 0
+    for item in items:
+        if item.placeholder_offset < previous_end:
+            raise MediaCaptureRejected("Overlapping captured media placeholders")
+        item.verify_tokens(tokens, origin=0)
+        previous_end = item.end
+        expected[item.token_id] += sum(length for _, length in item.embedding_spans)
+    for token_id, count in expected.items():
+        actual = tokens.count(token_id)
+        if actual != count:
+            raise MediaCaptureRejected(
+                f"Unregistered media token {token_id}: found {actual} occurrences "
+                f"for {count} registered embedding positions"
+            )
+
+    image_items = [item for item in items if item.modality == "image"]
+    delimiters = {item.image_delimiter_ids for item in image_items}
+    if delimiters and delimiters != {None}:
+        if len(delimiters) != 1 or None in delimiters:
+            raise MediaCaptureRejected(
+                "Image delimiter metadata changed within a rollout"
+            )
+        delimiter_ids = next(iter(delimiters))
+        assert delimiter_ids is not None
+        start_id, end_id = delimiter_ids
+        image_ids = {item.token_id for item in image_items}
+        if len(image_ids) != 1:
+            raise MediaCaptureRejected("Image embedding ID changed within a rollout")
+        actual_spans = verify_image_delimiters(
+            tokens, start_id=start_id, image_id=next(iter(image_ids)), end_id=end_id
+        )
+        if actual_spans != [
+            span for item in image_items for span in item.embedding_spans
+        ]:
+            raise MediaCaptureRejected(
+                "Image delimiters disagree with registered occurrences"
+            )
+
+
+def verify_image_delimiters(
+    tokens: list[int], *, start_id: int, image_id: int, end_id: int
+) -> list[tuple[int, int]]:
+    """Parse complete Omni image blocks; never match an inner substring."""
+    if len({start_id, image_id, end_id}) != 3:
+        raise MediaCaptureRejected("Image token IDs must be distinct")
+    spans = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == start_id:
+            j = i + 1
+            while j < len(tokens) and tokens[j] == image_id:
+                j += 1
+            if j == i + 1 or j == len(tokens) or tokens[j] != end_id:
+                raise MediaCaptureRejected(f"Malformed image delimiter at token {i}")
+            spans.append((i + 1, j - i - 1))
+            i = j + 1
+        elif tokens[i] in (image_id, end_id):
+            raise MediaCaptureRejected(f"Orphan image delimiter/payload at token {i}")
+        else:
+            i += 1
+    return spans
+
+
+MEDIA_VALIDATION_VERSION = 1
+MEDIA_VALIDATION_TAG = "captured_media_validation_version"
+
+
+def require_validated_media_replay(
+    fields: list[str], tags: list[dict[str, Any]]
+) -> None:
+    """Fail before training if restored canonical media bypassed current guards."""
+    if "pixel_values" in fields and (
+        not tags
+        or any(
+            tag.get(MEDIA_VALIDATION_TAG) != MEDIA_VALIDATION_VERSION for tag in tags
+        )
+    ):
+        raise ValueError(
+            "Saved canonical media rollouts predate strict media validation. "
+            "Resume model/optimizer state with empty rollout buffers or revalidate "
+            "and republish those rows; refusing to train unchecked replay."
+        )
 
 
 def _geometry_tensor(value: Any) -> torch.Tensor:
@@ -227,6 +340,7 @@ def capture_processed_media(
     retained: tuple[CapturedMediaItem, ...] = (),
     splice: PrefixSplice | None = None,
     image_token_id: int | None = None,
+    image_delimiter_ids: tuple[int, int] | None = None,
     patch_size: int | None = None,
 ) -> CapturedMedia:
     """Remap vLLM placeholders and snapshot per-call media in Megatron's layout."""
@@ -307,6 +421,8 @@ def capture_processed_media(
                     "Image capture requires contiguous image embedding positions"
                 )
             token_id = local_tokens[positions[0]]
+            if image_token_id is not None and token_id != image_token_id:
+                raise MediaCaptureRejected("Image embedding token ID changed")
             if data.get("num_tokens_per_image") is not None and int(
                 data["num_tokens_per_image"]
             ) != len(positions):
@@ -341,6 +457,7 @@ def capture_processed_media(
             token_id,
             tuple(runs),
             tuple(tuple(size) for size in sizes.tolist()),
+            image_delimiter_ids if modality == "image" else None,
         )
         captured.verify_tokens(
             splice.token_ids if splice is not None else tokens, origin=0
@@ -361,6 +478,9 @@ def capture_processed_media(
         corrected[modality].append(replace(span, offset=offset))
     if tuple(seen) != retained:
         raise MediaCaptureRejected("Rendered prefix dropped captured media")
+    verify_media_token_coverage(
+        splice.token_ids if splice is not None else tokens, [*seen, *added]
+    )
     tensors = None
     if packed:
         # Retained items come first (sorted by offset, none cross prev_len), so

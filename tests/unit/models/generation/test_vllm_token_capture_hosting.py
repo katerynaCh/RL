@@ -546,7 +546,11 @@ def test_omni_capture_setup_rejects_video_pruning(monkeypatch, pruning_rate):
     monkeypatch.setattr(
         NanoNemotronVLProcessingInfo,
         "get_hf_processor",
-        lambda self: SimpleNamespace(_img_context_token_ids=[18]),
+        lambda self: SimpleNamespace(
+            _img_context_token_ids=[18],
+            _img_start_token_ids=[16],
+            _img_end_token_ids=[17],
+        ),
     )
     monkeypatch.setattr(
         NanoNemotronVLProcessingInfo,

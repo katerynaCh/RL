@@ -240,6 +240,7 @@ class VllmAsyncGenerationWorkerImpl(
         self._capture_media = False
         self._capture_patch_size: int | None = None
         self._capture_image_token_id: int | None = None
+        self._capture_image_delimiter_ids: tuple[int, int] | None = None
         # TQTokenSource installed by setup_token_capture. The media path reads
         # parent-chain rows through it directly; prefix resolution goes through
         # the shared ChainPrefixCache below.
@@ -586,6 +587,18 @@ class VllmAsyncGenerationWorkerImpl(
                     "Omni media capture requires one image-context token ID"
                 )
             self._capture_image_token_id = int(context_ids[0])
+            processor = info.get_hf_processor()
+            if (
+                len(processor._img_start_token_ids) != 1
+                or len(processor._img_end_token_ids) != 1
+            ):
+                raise ValueError(
+                    "Omni media capture requires single-token image delimiters"
+                )
+            self._capture_image_delimiter_ids = (
+                int(processor._img_start_token_ids[0]),
+                int(processor._img_end_token_ids[0]),
+            )
             self._capture_patch_size = int(info.get_hf_config().patch_size)
         self._capture_media = capture_media
         source = TQTokenSource(
@@ -754,6 +767,7 @@ class VllmAsyncGenerationWorkerImpl(
             retained=retained,
             splice=splice,
             image_token_id=self._capture_image_token_id,
+            image_delimiter_ids=self._capture_image_delimiter_ids,
             patch_size=self._capture_patch_size,
         )
 

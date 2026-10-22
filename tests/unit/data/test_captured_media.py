@@ -137,6 +137,8 @@ def stage(
     partition="staging",
     sink=None,
     expect="staged",
+    generation_tokens: list[int] | None = None,
+    image_delimiter_ids: tuple[int, int] | None = None,
 ):
     sink = sink or TQTokenSink(
         dp,
@@ -148,7 +150,12 @@ def stage(
         sink=sink, weight_version_fn=lambda: 3, adapter=VLLMCaptureAdapter()
     )
     prev_len = parent.cum_len if parent is not None else 0
-    media = capture_processed_media(prompt, prev_len=prev_len, retained=retained)
+    media = capture_processed_media(
+        prompt,
+        prev_len=prev_len,
+        retained=retained,
+        image_delimiter_ids=image_delimiter_ids,
+    )
     admission = CaptureAdmission(
         rollout_id=rollout_id,
         model_call_id=call_id,
@@ -159,9 +166,16 @@ def stage(
         parent_chain_hash=parent.chain_hash if parent else None,
     )
     message = {"generation_token_ids": [31, 2], "generation_log_probs": [-0.25, -0.5]}
+    if generation_tokens is not None:
+        message = {
+            "generation_token_ids": list(generation_tokens),
+            "generation_log_probs": [-0.25] * len(generation_tokens),
+        }
     if routes:
         message["routed_experts"] = [[[0]]] * (
-            len(prompt["prompt_token_ids"]) + 2 - prev_len
+            len(prompt["prompt_token_ids"])
+            + len(message["generation_token_ids"])
+            - prev_len
         )
     payload = {
         "prompt_token_ids": prompt["prompt_token_ids"],
@@ -641,6 +655,7 @@ def test_worker_restart_recovers_retained_geometry_without_fetching_pixels(
     worker = SimpleNamespace(
         _capture_media=True,
         _capture_image_token_id=18,
+        _capture_image_delimiter_ids=None,
         _capture_patch_size=1,
         _staging_source=source,
         _chain_prefix=ChainPrefixCache(source),
@@ -971,6 +986,7 @@ def retained_call(dp):
     worker = SimpleNamespace(
         _capture_media=True,
         _capture_image_token_id=18,
+        _capture_image_delimiter_ids=None,
         _capture_patch_size=1,
         _staging_source=source,
         _chain_prefix=ChainPrefixCache(source),
@@ -1354,3 +1370,217 @@ async def test_retained_media_rejection_precedes_inference_and_survives_gym(
     )
     assert isinstance(failure, GymTransportError)
     assert "retained_media_changed" in str(failure)
+
+
+@pytest.mark.parametrize("position", [0, 4, 5])
+def test_orphan_image_token_is_rejected_before_generation(position):
+    tokens = [10, 18, 18, 11, 50]
+    tokens.insert(position, 18)
+    offset = 2 if position == 0 else 1
+    with pytest.raises(MediaCaptureRejected, match="Unregistered media token"):
+        capture_processed_media(
+            engine_prompt(tokens, [(Span(offset, 2), torch.ones(3, 2, 3))]),
+            prev_len=0,
+        )
+
+
+def test_image_token_hidden_by_embedding_mask_is_rejected():
+    with pytest.raises(MediaCaptureRejected, match="Unregistered media token"):
+        capture_processed_media(
+            engine_prompt(
+                [18, 18, 18],
+                [(Span(0, 3, torch.tensor([False, True, True])), torch.ones(3, 2, 3))],
+            ),
+            prev_len=0,
+        )
+
+
+def test_image_embedding_id_must_match_model():
+    with pytest.raises(MediaCaptureRejected, match="token ID changed"):
+        capture_processed_media(
+            engine_prompt([19, 19], [(Span(0, 2), torch.ones(3, 2, 3))]), prev_len=0
+        )
+
+
+def test_rendered_literal_image_token_is_allowed_when_exact_history_is_text():
+    pixels = torch.ones(3, 2, 3)
+    exact = [10, 18, 18, 11, 70, 71, 2]
+    first = capture_processed_media(
+        engine_prompt(exact, [(Span(1, 2), pixels)]), prev_len=0
+    )
+    rendered = [10, 18, 18, 11, 18, 2]
+    template = rendered + [12, 18, 18, 11]
+    splice = splice_prefix_tokens(
+        tokenizer=SimpleNamespace(eos_token_id=2),
+        model_prefix_token_ids=exact,
+        template_prefix_token_ids=rendered,
+        template_token_ids=template,
+    )
+    captured = capture_processed_media(
+        engine_prompt(template, [(Span(1, 2), pixels), (Span(7, 2), pixels)]),
+        prev_len=len(exact),
+        retained=first.items,
+        splice=splice,
+    )
+    assert captured.items[0].embedding_spans == ((8, 2),)
+
+
+def test_text_only_literal_media_token_remains_supported(dp):
+    root, _ = stage(dp, engine_prompt([10, 18, 11]), generation_tokens=[18, 2])
+    row = finalizer(dp).finalize_rollout("r0", receipt(root), reward=0)
+    assert row.valid and row.media is None
+
+
+@pytest.mark.parametrize("routes", [False, True])
+def test_terminal_orphan_is_masked_without_losing_valid_sibling(dp, routes):
+    pixels = torch.ones(3, 2, 3)
+    good, _ = stage(
+        dp,
+        engine_prompt([10, 18, 18, 11], [(Span(1, 2), pixels)]),
+        rollout_id="g0_g0",
+        routes=routes,
+    )
+    bad, _ = stage(
+        dp,
+        engine_prompt([10, 18, 18, 11], [(Span(1, 2), pixels)]),
+        generation_tokens=[31, 18, 2],
+        routes=routes,
+        rollout_id="g0_g1",
+    )
+    client = RecordingClient(dp)
+    rejected = finalizer(client).finalize_rollout(
+        "g0_g1", receipt(bad, rollout_id="g0_g1"), reward=1
+    )
+    assert not rejected.valid
+    assert (
+        "invalid_media_alignment:Unregistered media token" in rejected.rejection_reason
+    )
+    assert client.tensor_reads() == []
+    group = finalizer(dp, router_replay_enabled=routes).finalize_group(
+        "g0",
+        ["g0_g0", "g0_g1"],
+        [receipt(good, rollout_id="g0_g0"), receipt(bad, rollout_id="g0_g1")],
+        [1.0, 1.0],
+        mask_sample=[False, False],
+        fallback_weight_version=3,
+        prompt_idx=0,
+    )
+    assert group.valid_row_count == 1
+    from nemo_rl.data.captured_media import require_validated_media_replay
+
+    require_validated_media_replay(group.meta.fields, group.meta.tags)
+    fields = dp.get_samples(group.meta.sample_ids, "train", group.meta.fields)
+    assert fields["sample_mask"].tolist() == [1.0, 0.0]
+    assert dp.list_sample_ids("staging") == []
+
+
+def test_off_chain_orphan_does_not_reject_selected_chain(dp):
+    pixels = torch.ones(3, 2, 3)
+    good, _ = stage(dp, engine_prompt([10, 18, 18, 11], [(Span(1, 2), pixels)]))
+    bad, _ = stage(
+        dp,
+        engine_prompt([10, 18, 18, 11], [(Span(1, 2), pixels)]),
+        call_id="discarded",
+        generation_tokens=[18, 2],
+    )
+    row = finalizer(dp).finalize_rollout(
+        "r0", receipt(good, bad, terminal="c1"), reward=1
+    )
+    assert row.valid, row.rejection_reason
+
+
+def test_orphan_video_image_token_is_rejected():
+    with pytest.raises(MediaCaptureRejected, match="Unregistered media token"):
+        capture_processed_media(
+            video_prompt([90, 18, 91, 18, 18], [(Span(0, 4), torch.ones(4, 3, 2, 2))]),
+            prev_len=0,
+        )
+
+
+@pytest.mark.parametrize("suffix", [[16], [17], [16, 17], [16, 16, 18, 17]])
+def test_stray_image_delimiters_rejected(suffix):
+    with pytest.raises(
+        MediaCaptureRejected, match="delimiter|Unregistered media token"
+    ):
+        capture_processed_media(
+            engine_prompt(
+                [16, 18, 18, 17, *suffix], [(Span(1, 2), torch.ones(3, 2, 3))]
+            ),
+            prev_len=0,
+            image_delimiter_ids=(16, 17),
+        )
+
+
+def test_registered_image_requires_complete_delimiters():
+    with pytest.raises(MediaCaptureRejected, match="delimiter"):
+        capture_processed_media(
+            engine_prompt([10, 18, 18, 11], [(Span(1, 2), torch.ones(3, 2, 3))]),
+            prev_len=0,
+            image_delimiter_ids=(16, 17),
+        )
+
+
+def test_delimiter_metadata_round_trip_and_final_answer_guard():
+    from nemo_rl.data.captured_media import (
+        CapturedMediaItem,
+        verify_media_token_coverage,
+    )
+
+    tokens = [16, 18, 18, 17]
+    capture = capture_processed_media(
+        engine_prompt(tokens, [(Span(1, 2), torch.ones(3, 2, 3))]),
+        prev_len=0,
+        image_delimiter_ids=(16, 17),
+    )
+    items = [CapturedMediaItem.from_dict(item.to_dict()) for item in capture.items]
+    assert items == list(capture.items)
+    verify_media_token_coverage(tokens + [42], items)
+    with pytest.raises(MediaCaptureRejected, match="delimiter"):
+        verify_media_token_coverage(tokens + [17], items)
+
+
+def test_strict_delimiter_metadata_survives_staging_and_publication(dp):
+    from nemo_rl.data.captured_media import require_validated_media_replay
+
+    pixels = torch.ones(3, 2, 3)
+    root, _ = stage(
+        dp,
+        engine_prompt([16, 18, 18, 17], [(Span(1, 2), pixels)]),
+        image_delimiter_ids=(16, 17),
+    )
+    row = finalizer(dp).finalize_rollout("r0", receipt(root), reward=1.0)
+    assert row.valid, row.rejection_reason
+    torch.testing.assert_close(row.media["pixel_values"].as_tensor(), packed(pixels))
+    # Exercise Gym's extras digest and the actual TQ sink, not just dict roundtrip.
+    result = finalizer(dp).finalize_group(
+        "g0",
+        ["r0"],
+        [receipt(root)],
+        [1.0],
+        mask_sample=[False],
+        fallback_weight_version=3,
+        prompt_idx=0,
+        canonical_sample_ids=["g0_g0"],
+    )
+    assert result.valid_row_count == 1
+    fields = dp.get_samples(result.meta.sample_ids, "train", result.meta.fields)
+    assert fields["sample_mask"].tolist() == [1.0]
+    require_validated_media_replay(result.meta.fields, result.meta.tags)
+    assert dp.list_sample_ids("staging") == []
+
+
+def test_restored_canonical_media_requires_guard_version():
+    from nemo_rl.data.captured_media import (
+        MEDIA_VALIDATION_TAG,
+        MEDIA_VALIDATION_VERSION,
+        require_validated_media_replay,
+    )
+
+    require_validated_media_replay(["input_ids"], [{}])
+    require_validated_media_replay(
+        ["pixel_values"], [{MEDIA_VALIDATION_TAG: MEDIA_VALIDATION_VERSION}]
+    )
+    with pytest.raises(ValueError, match="unchecked replay"):
+        require_validated_media_replay(["pixel_values"], [{}])
+    with pytest.raises(ValueError, match="unchecked replay"):
+        require_validated_media_replay(["pixel_values"], [{MEDIA_VALIDATION_TAG: 0}])
