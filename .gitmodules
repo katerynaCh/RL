@@ -10,6 +10,6 @@
 	shallow = true
 [submodule "3rdparty/Gym-workspace/Gym"]
 	path = 3rdparty/Gym-workspace/Gym
-	url = https://github.com/NVIDIA-NeMo/Gym.git
-	branch = rohit/unified-teacher-supervl3p5
+	url = https://github.com/katerynaCh/Gym.git
+	branch = kchumachenko/opencode-multimodal-benchmarks
 	shallow = true
