@@ -22,10 +22,9 @@ This module provides different advantage estimation strategies:
 - GeneralizedAdvantageEstimator: Generalized Advantage Estimation (GAE) with temporal bootstrapping
 - OPDAdvantageEstimator: Multi-Teacher On-Policy Distillation (MOPD) token-level distillation advantages
 
-Every group-relative estimator (GRPO, GDPO, Reinforce++) accepts ``valid_mask``
-and must honor it: the SingleController always passes ``final_sample_mask`` as
-``valid_mask`` so token-capture placeholder rows (and sequence-logprob-error
-masked rows) do not vote in their siblings' baselines.
+Group-relative estimators accept ``valid_mask`` for loss-valid baselines.
+GRPO can instead include filtered rollout rewards via ``reward_valid_mask``;
+token-capture placeholders remain excluded in either mode.
 
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
@@ -56,6 +55,10 @@ class AdvEstimatorConfig(BaseModel, extra="allow"):
     # GRPO specific
     normalize_rewards: bool = True
     use_leave_one_out_baseline: bool = True
+    # GRPO/V2: include rewards from loss-filtered rollouts in the baseline,
+    # matching legacy GRPO. Capture-invalid placeholders remain excluded.
+    # False preserves the default baseline over loss-valid samples only.
+    include_filtered_rewards_in_baseline: bool = False
     # GDPO specific: optional per-component weights w_n for the aggregation.
     reward_weights: list[float] | None = None
     # Reinforce++ specific
@@ -87,8 +90,13 @@ class GRPOAdvantageEstimator:
     ):
         self.use_leave_one_out_baseline = estimator_config.use_leave_one_out_baseline
         self.normalize_rewards = estimator_config.normalize_rewards
+        self.include_filtered_rewards_in_baseline = (
+            estimator_config.include_filtered_rewards_in_baseline
+        )
 
-    def compute_advantage(self, prompt_ids, rewards, mask, valid_mask=None, **kwargs):
+    def compute_advantage(
+        self, prompt_ids, rewards, mask, valid_mask=None, reward_valid_mask=None, **kwargs
+    ):
         """Compute GRPO advantages.
 
         Args:
@@ -101,11 +109,21 @@ class GRPOAdvantageEstimator:
                   placeholder rows carry 0.0 (their sample_mask already excludes them
                   from the loss; excluding them here keeps siblings' baselines unbiased).
                   None keeps the legacy all-valid behavior.
+            reward_valid_mask: Capture-valid rows before environment, length, and
+                logprob loss filters. Required when including filtered rewards;
+                placeholders must be zero even if they carry a copied reward.
             **kwargs: Additional arguments (unused).
 
         Returns:
             Advantages tensor of shape [batch_size, seq_len].
         """
+        if self.include_filtered_rewards_in_baseline:
+            if reward_valid_mask is None:
+                raise ValueError(
+                    "include_filtered_rewards_in_baseline requires reward_valid_mask "
+                    "from the V2 controller to exclude capture-invalid placeholders"
+                )
+            valid_mask = reward_valid_mask
         (
             baseline,
             std,

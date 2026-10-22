@@ -40,6 +40,8 @@ grpo:
     name: "grpo"  # Use "reinforce_plus_plus" for Reinforce++ estimator
     normalize_rewards: ${grpo.normalize_rewards}
     use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
+    # V2 GRPO: retain loss-filtered rewards in the baseline; exclude capture placeholders.
+    include_filtered_rewards_in_baseline: false
     minus_baseline: true  # Reinforce++-baseline specific: subtract per-prompt mean baseline
   reward_scaling:
     enabled: false

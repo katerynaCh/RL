@@ -5295,6 +5295,9 @@ class SingleControllerActor:
                 # and mask_sample/overlong/seq-logprob-error rows are folded in
                 # via final_sample_mask) instead of the hardwired all-ones.
                 valid_mask=final_sample_mask,
+                # Preserve capture validity separately from training filters so
+                # GRPO can retain graded failures in the legacy group baseline.
+                reward_valid_mask=sample_mask,
                 **kwargs,
             )
             if self._is_ppo:

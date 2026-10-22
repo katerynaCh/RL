@@ -766,9 +766,11 @@ class _AdvantageDataPlane:
 class _MaskRecordingAdvantageEstimator:
     def __init__(self) -> None:
         self.mask: torch.Tensor | None = None
+        self.reward_valid_mask: torch.Tensor | None = None
 
-    def compute_advantage(self, *, rewards, mask, **kwargs) -> torch.Tensor:
+    def compute_advantage(self, *, rewards, mask, reward_valid_mask, **kwargs) -> torch.Tensor:
         del kwargs
+        self.reward_valid_mask = reward_valid_mask.clone()
         self.mask = mask.clone()
         return rewards.unsqueeze(-1).expand_as(mask).clone()
 
@@ -864,6 +866,7 @@ def test_advantage_stage_composes_all_filters_before_computing_advantages(
     assert estimator.mask is not None
     assert estimator.mask[0].all()
     assert estimator.mask[1:].count_nonzero() == 0
+    torch.testing.assert_close(estimator.reward_valid_mask, torch.ones(batch_size))
     assert ctrl._step_log_dict["num_mask_sample_filtered"] == [1]
     metrics = ctrl._step_log_dict["seq_logprob_error_metrics"]
     assert len(metrics) == 1

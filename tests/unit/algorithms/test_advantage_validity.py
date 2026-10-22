@@ -14,6 +14,7 @@
 
 """S4: validity-aware group baselines (token-capture placeholder rows)."""
 
+import pytest
 import torch
 
 from nemo_rl.algorithms.advantage_estimator import (
@@ -197,3 +198,50 @@ def test_reinforce_pp_none_valid_mask_keeps_legacy_all_valid_behavior():
         prompt_ids, rewards, mask, valid_mask=torch.ones(4)
     )
     assert torch.equal(legacy, explicit)
+
+
+@pytest.mark.parametrize("filtered_failures", [1, 8])
+def test_grpo_retains_filtered_failures_in_legacy_baseline(filtered_failures):
+    rewards = torch.tensor([1.0] * (16 - filtered_failures) + [0.0] * filtered_failures)
+    loss_valid = rewards.clone()
+    prompt_ids = torch.zeros(16, 1, dtype=torch.long)
+    mask = loss_valid[:, None].expand(16, 5)
+    config = AdvEstimatorConfig(
+        normalize_rewards=False,
+        use_leave_one_out_baseline=True,
+        include_filtered_rewards_in_baseline=True,
+    )
+    estimator = GRPOAdvantageEstimator(config, loss_config=None)
+    advantages = estimator.compute_advantage(
+        prompt_ids, rewards, mask,
+        valid_mask=loss_valid, reward_valid_mask=torch.ones(16),
+    )
+    torch.testing.assert_close(advantages[0], torch.full((5,), filtered_failures / 15))
+    # Disabling the option preserves the existing V2 behavior.
+    default = GRPOAdvantageEstimator(
+        config.model_copy(update={"include_filtered_rewards_in_baseline": False}),
+        loss_config=None,
+    ).compute_advantage(prompt_ids, rewards, mask, valid_mask=loss_valid)
+    assert default[0].count_nonzero() == 0
+
+
+def test_grpo_legacy_baseline_still_excludes_capture_placeholders():
+    estimator = _estimator(include_filtered_rewards_in_baseline=True)
+    prompt_ids = torch.zeros(3, 1, dtype=torch.long)
+    mask = torch.tensor([[1.0] * 5, [0.0] * 5, [0.0] * 5])
+    outputs = []
+    for placeholder_reward in (0.0, 1000.0):
+        outputs.append(estimator.compute_advantage(
+            prompt_ids, torch.tensor([1.0, 0.0, placeholder_reward]), mask,
+            valid_mask=torch.tensor([1.0, 0.0, 0.0]),
+            reward_valid_mask=torch.tensor([1.0, 1.0, 0.0]),
+        ))
+    torch.testing.assert_close(outputs[0][0], torch.full((5,), 0.5))
+    torch.testing.assert_close(outputs[0][0], outputs[1][0])
+
+
+def test_grpo_legacy_baseline_requires_capture_validity():
+    with pytest.raises(ValueError, match="requires reward_valid_mask"):
+        _estimator(include_filtered_rewards_in_baseline=True).compute_advantage(
+            torch.zeros(2, 1, dtype=torch.long), torch.ones(2), torch.ones(2, 3)
+        )
