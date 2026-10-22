@@ -81,6 +81,9 @@ class VllmSpecificArgs(TypedDict):
     # fits within max_model_len. This is needed when multimodal processing makes
     # the training prompt longer than its text-only representation.
     cap_max_tokens_to_context: NotRequired[bool]
+    # Opt-in Omni image tiling independent of other images/context growth.
+    # Absent/false retains vLLM's native shared-budget tiling.
+    stable_image_preprocessing: NotRequired[bool]
     # Use ModelOpt MXFP8 quantization when precision is fp8.
     is_mx: NotRequired[bool]
     # Deprecated in 0.8. Use quantization_ignore_patterns instead.

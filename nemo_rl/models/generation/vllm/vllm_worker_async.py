@@ -342,6 +342,15 @@ class VllmAsyncGenerationWorkerImpl(
             llm_kwargs["compilation_config"] = CompilationConfig(**compilation_config)
 
         self.llm_async_engine_args = AsyncEngineArgs(**llm_kwargs)
+        if self.cfg["vllm_cfg"].get("stable_image_preprocessing"):
+            # Optional vLLM processor dependency, only for Omni image recipes.
+            from nemo_rl.models.generation.vllm.stable_images import (
+                install_stable_image_preprocessing,
+            )
+
+            install_stable_image_preprocessing(
+                self.llm_async_engine_args.create_model_config().hf_config
+            )
         self.stat_loggers = (
             [PrometheusStatLogger]
             if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False)

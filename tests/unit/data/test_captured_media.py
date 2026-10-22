@@ -1584,3 +1584,52 @@ def test_restored_canonical_media_requires_guard_version():
         require_validated_media_replay(["pixel_values"], [{}])
     with pytest.raises(ValueError, match="unchecked replay"):
         require_validated_media_replay(["pixel_values"], [{MEDIA_VALIDATION_TAG: 0}])
+
+
+@pytest.mark.vllm
+@pytest.mark.parametrize("cache_state", ["disabled", "warm", "restart"])
+def test_stable_tiling_keeps_retained_pixels_when_adding_image(
+    real_image_processor, monkeypatch, cache_state
+):
+    import numpy as np
+    from PIL import Image
+    from vllm.transformers_utils.processors.nano_nemotron_vl import (
+        DynamicResolutionImageTiler,
+    )
+
+    from nemo_rl.models.generation.vllm.stable_images import stable_compute_params
+
+    monkeypatch.setattr(
+        DynamicResolutionImageTiler, "compute_params", stable_compute_params
+    )
+    image = Image.fromarray(
+        np.arange(128 * 128 * 3, dtype=np.uint8).reshape(128, 128, 3)
+    )
+    processor = real_image_processor(80, cache_state != "disabled")
+    first = processor("<image>", processor.info.parse_mm_data({"image": [image]}))
+    retained = capture_processed_media(
+        first, prev_len=0, patch_size=8, image_delimiter_ids=(16, 17)
+    )
+    if cache_state == "restart":
+        processor = real_image_processor(80, True)
+    second = processor(
+        "<image><image>" + " t" * 32,
+        processor.info.parse_mm_data({"image": [image, image]}),
+    )
+    torch.testing.assert_close(
+        first["mm_kwargs"]["image"][0].get_data()["pixel_values_flat"],
+        second["mm_kwargs"]["image"][0].get_data()["pixel_values_flat"],
+        rtol=0,
+        atol=0,
+    )
+    added = capture_processed_media(
+        second,
+        prev_len=len(first["prompt_token_ids"]),
+        retained=retained.items,
+        patch_size=8,
+        image_delimiter_ids=(16, 17),
+    )
+    assert len(added.items) == 1
+    assert (
+        len(second["prompt_token_ids"]) > 80
+    )  # Engine context cap must reject; never retile history.
