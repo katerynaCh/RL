@@ -867,8 +867,18 @@ Depending on your data shape, you may want to change these values."""
 
         timer = Timer()
         timer.start("_run_rollouts_total")
+        # A configured validity threshold opts into partial capture groups.
+        # Let Gym return failed episodes as rows so one failed /run does not
+        # close the result stream before its healthy siblings finish.
+        failure_routing = {}
+        if self._token_capture_enabled and (
+            self.cfg["token_capture"].get("min_valid_fraction_per_group") is not None
+        ):
+            failure_routing["route_failures_to_sidecar"] = True
         nemo_gym_result_iterator = self.rch.run_examples(
-            examples=nemo_gym_examples, head_server_config=self.head_server_config
+            examples=nemo_gym_examples,
+            head_server_config=self.head_server_config,
+            **failure_routing,
         )
         # Gym resolves task_source to agent_ref synchronously in run_examples().
         # Build the counter afterward so completion rows use the resolved identity.
@@ -993,6 +1003,14 @@ Depending on your data shape, you may want to change these values."""
         except (RuntimeError, OSError) as error:
             # An unfetchable manifest finalizes as a placeholder row.
             print(f"manifest({rollout_id}) fetch failed: {error}", flush=True)
+        if receipt is not None and nemo_gym_result.get("_ng_failure_class"):
+            # A failed episode can still have a valid prefix in the ledger.
+            # Never train that prefix as a scored completion. Keep its manifest
+            # so the finalizer can release staged tensors while masking the row.
+            receipt["capture_poisoned"] = True
+            receipt["failure_reason"] = (
+                f"agent_run_failed:{nemo_gym_result['_ng_failure_class']}"
+            )
         return {
             "message_log": [],
             "input_message_log": [],

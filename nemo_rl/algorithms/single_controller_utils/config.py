@@ -628,7 +628,9 @@ class TokenCaptureConfig(BaseModel, extra="allow"):
     # finalizer; distinct from the canonical rollout partition).
     staging_partition: str = "rollout_staging"
     # Drop the whole group when fewer than this fraction of its rollouts
-    # produced valid rows (None keeps every group).
+    # produced valid rows (None keeps every finalized group). When configured,
+    # Gym /run failures become invalid placeholder rows instead of closing the
+    # group stream; healthy siblings can finish and contribute to this fraction.
     min_valid_fraction_per_group: Optional[float] = None
     # Bearer token for Gym's token-capture control routes. None =
     # minted per run at setup; set explicitly only for multi-controller

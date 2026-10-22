@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -144,6 +144,82 @@ def test_receipt_postprocess_fetches_manifest_and_selects_terminal_row() -> None
     assert receipt["failure_reason"] is None
     assert receipt["reward"] == 1.0
     assert [r["model_call_id"] for r in receipt["manifest"]] == ["c1", "c2"]
+
+
+@pytest.mark.parametrize("failure_class", ["agent_run_error", "timeout"])
+def test_failed_episode_masks_valid_prefix_and_preserves_cleanup_keys(
+    failure_class: str,
+) -> None:
+    env = _capture_env()
+    env._control = AsyncMock(
+        return_value={"records": [_manifest_record("c1")], "failures": []}
+    )
+    result = asyncio.run(
+        env._postprocess_receipt_mode(
+            {"_ng_rollout_id": "r0"},
+            {"_ng_failure_class": failure_class, "reward": 0.0},
+        )
+    )
+    receipt = result["receipt"]
+    assert receipt["capture_poisoned"] is True
+    assert receipt["failure_reason"] == f"agent_run_failed:{failure_class}"
+    assert [record["staging_key"] for record in receipt["manifest"]] == ["r0/c1"]
+
+
+@pytest.mark.parametrize("valid_rows", [0, 7, 8, 15, 16])
+def test_partial_group_stream_keeps_siblings_after_failed_episodes(
+    valid_rows: int,
+) -> None:
+    env = _capture_env()
+    env.cfg = {"token_capture": {"min_valid_fraction_per_group": 0.5}}
+    env._token_capture_enabled = True
+    env._tokenizer = object()
+    env._require_spinup = Mock()
+    env.head_server_config = object()
+    rows = [
+        {
+            "_rowidx": i,
+            "_ng_rollout_id": f"r{i}",
+            "agent_ref": {"name": "agent"},
+            "responses_create_params": {"input": []},
+        }
+        for i in range(16)
+    ]
+    # Every prefix would assemble as valid without explicit episode masking.
+    env._control = AsyncMock(
+        return_value={"records": [_manifest_record("c1")], "failures": []}
+    )
+
+    async def completed(row: dict) -> tuple[dict, dict]:
+        if row["_rowidx"] >= valid_rows:
+            return row, {"_ng_failure_class": "agent_run_error"}
+        return row, {"reward": 1.0}
+
+    def run_examples(
+        *,
+        examples: list[dict],
+        head_server_config: object,
+        route_failures_to_sidecar: bool,
+    ) -> list:
+        assert route_failures_to_sidecar is True
+        # Failures arrive first, with healthy results arriving afterward.
+        return [completed(row) for row in reversed(examples)]
+
+    env.rch = Mock()
+    env.rch.run_examples.side_effect = run_examples
+
+    async def collect() -> list:
+        return [item async for item in env._stream_rollouts(rows, "test")]
+
+    results = asyncio.run(collect())
+    env.rch.run_examples.assert_called_once()
+    assert len(results) == 16
+    assert {item[0] for item in results} == set(range(16))
+    assert (
+        sum(not item[2]["receipt"]["capture_poisoned"] for item in results)
+        == valid_rows
+    )
+    assert all(item[2]["rollout_id"] == f"r{item[0]}" for item in results)
 
 
 def test_receipt_assembly_poisons_on_failure_rows() -> None:

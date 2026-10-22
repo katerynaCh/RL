@@ -316,27 +316,37 @@ def test_known_outcome_cleanup_runs_sync_clears_off_the_event_loop() -> None:
 
 
 @pytest.mark.parametrize(
-    ("valid_rows", "threshold", "rejected"),
-    [(0, 1.0, True), (1, 1.0, True), (2, 1.0, False), (1, 0.5, False)],
+    ("valid_rows", "total_rows", "threshold", "rejected"),
+    [
+        (0, 2, 1.0, True),
+        (1, 2, 1.0, True),
+        (2, 2, 1.0, False),
+        (1, 2, 0.5, False),
+        (0, 16, 0.5, True),
+        (7, 16, 0.5, True),
+        (8, 16, 0.5, False),
+        (9, 16, 0.5, False),
+        (16, 16, 0.5, False),
+    ],
 )
 def test_quality_rejection_never_publishes_deleted_rows(
-    valid_rows, threshold, rejected
+    valid_rows, total_rows, threshold, rejected
 ):
-    sample_ids = ("group_g0", "group_g1")
+    sample_ids = tuple(f"group_g{i}" for i in range(total_rows))
     request = replace(
         _request(),
         rollout_ids=sample_ids,
         canonical_sample_ids=sample_ids,
-        receipts=({}, {}),
-        rewards=(1.0, 1.0),
-        mask_sample=(False, False),
+        receipts=tuple({} for _ in sample_ids),
+        rewards=(1.0,) * total_rows,
+        mask_sample=(False,) * total_rows,
     )
     meta = KVBatchMeta(
         partition_id="canonical",
         task_name="train",
         sample_ids=list(sample_ids),
         fields=["input_ids"],
-        sequence_lengths=[3, 3],
+        sequence_lengths=[3] * total_rows,
     )
     result = FinalizedGroup(
         meta=meta,
@@ -344,7 +354,7 @@ def test_quality_rejection_never_publishes_deleted_rows(
         group_max_wv=3,
         staging_keys=[],
         valid_row_count=valid_rows,
-        total_row_count=2,
+        total_row_count=total_rows,
     )
     actor = SimpleNamespace(finalize=_RemoteFinalize(result=result))
     ctrl = _controller(actor)
