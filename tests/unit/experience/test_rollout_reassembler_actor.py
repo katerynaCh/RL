@@ -103,6 +103,7 @@ def test_finalize_forwards_loss_multiplier_to_reassembler() -> None:
         [request.receipts[0]],
         [1.0],
         mask_sample=[False],
+        reward_breakdowns=None,
         fallback_weight_version=4,
         prompt_idx=17,
         loss_multiplier=0.25,
@@ -178,6 +179,7 @@ def test_rpc_dataclass_fields_are_classified() -> None:
         "canonical_sample_ids",
         "receipts",
         "rewards",
+        "reward_breakdowns",
         "fallback_weight_version",
         "prompt_idx",
         "mask_sample",
@@ -286,3 +288,19 @@ def test_dependency_check_propagates_import_error(
     with pytest.raises(ModuleNotFoundError) as exc_info:
         actor.check_dependencies()
     assert exc_info.value is import_error
+
+
+def test_finalizer_forwards_reward_breakdown_metadata():
+    from nemo_rl.experience.metric_utils import RewardBreakdown
+
+    actor_cls = RolloutReassemblerActor.__ray_metadata__.modified_class
+    actor = object.__new__(actor_cls)
+    actor._finalizer = MagicMock()
+    actor._finalizer.finalize_group.return_value = None
+    breakdown = RewardBreakdown(1.0, 0.1)
+    request = replace(_request(), rewards=(1.1,), reward_breakdowns=(breakdown,))
+    assert_metadata_only(request)
+    actor.finalize(request)
+    assert actor._finalizer.finalize_group.call_args.kwargs["reward_breakdowns"] == [
+        breakdown
+    ]

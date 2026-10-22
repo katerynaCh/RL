@@ -64,7 +64,11 @@ from nemo_rl.experience.interfaces import (
     Completion,
     PromptGroupRecord,
 )
-from nemo_rl.experience.metric_utils import calculate_single_metric, pct
+from nemo_rl.experience.metric_utils import (
+    calculate_single_metric,
+    extract_reward_breakdown,
+    pct,
+)
 from nemo_rl.experience.rollout_recovery import (
     PromptGroupPhase,
     PromptGroupStatus,
@@ -2294,6 +2298,7 @@ class RolloutManager:
                     receipt=receipt,
                     reward=completion.reward,
                     mask_sample=mask_sample,
+                    reward_breakdown=extract_reward_breakdown(env_extras),
                 )
                 previous = pending_group_results.get(generation_index)
                 if previous is not None:
@@ -2323,6 +2328,7 @@ class RolloutManager:
                     receipt=receipt,
                     reward=completion.reward,
                     mask_sample=mask_sample,
+                    reward_breakdown=extract_reward_breakdown(env_extras),
                 )
 
         try:
@@ -2361,6 +2367,10 @@ class RolloutManager:
                 canonical_sample_ids=tuple(canonical_sample_ids),
                 receipts=tuple(receipts),
                 rewards=tuple(rewards),
+                reward_breakdowns=tuple(
+                    s.current_attempt.reward_breakdown
+                    for s in self._recovery_ledger.get_group(group_id).siblings
+                ),
                 fallback_weight_version=start_version,
                 prompt_idx=int(recovery_group.prompt_id),
                 mask_sample=tuple(mask_sample),

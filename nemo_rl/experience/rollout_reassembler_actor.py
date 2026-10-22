@@ -23,6 +23,7 @@ import torch
 
 from nemo_rl.data_plane import DataPlaneConfig, build_data_plane_client
 from nemo_rl.data_plane.adapters.tq_mooncake_checkpoint import run_checkpoint_command
+from nemo_rl.experience.metric_utils import RewardBreakdown
 from nemo_rl.experience.rollout_reassembler import FinalizedGroup, RolloutReassembler
 from nemo_rl.utils.venvs import make_actor_runtime_env
 
@@ -68,6 +69,8 @@ class ReassemblyRequest:
     mask_sample: tuple[bool, ...]
     # Dataset-level loss weight shared by every completion in this prompt group.
     loss_multiplier: float = 1.0
+    # Absent for callers and saved work predating component logging.
+    reward_breakdowns: tuple[RewardBreakdown | None, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,9 @@ class RolloutReassemblerActor:  # pragma: no cover
             list(request.receipts),
             list(request.rewards),
             mask_sample=list(request.mask_sample),
+            reward_breakdowns=list(request.reward_breakdowns)
+            if request.reward_breakdowns is not None
+            else None,
             fallback_weight_version=request.fallback_weight_version,
             prompt_idx=request.prompt_idx,
             loss_multiplier=request.loss_multiplier,

@@ -16,7 +16,9 @@
 
 import math
 import statistics
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 
 def is_histogram_metric(name: str) -> bool:
@@ -56,3 +58,34 @@ def pct(values: Sequence[float | int], p: float) -> float:
     sorted_v = sorted(values)
     idx = min(int(len(sorted_v) * p / 100), len(sorted_v) - 1)
     return float(sorted_v[idx])
+
+
+@dataclass(frozen=True)
+class RewardBreakdown:
+    """Logging-only answer score and tool shaping; never estimator inputs."""
+
+    base_reward: float
+    auxiliary_reward: float
+
+    def __post_init__(self) -> None:
+        if not all(math.isfinite(v) for v in (self.base_reward, self.auxiliary_reward)):
+            raise ValueError("Reward breakdown values must be finite")
+
+
+def extract_reward_breakdown(result: Mapping[str, Any]) -> RewardBreakdown | None:
+    """Read the OpenCode agent's existing result without changing its reward."""
+    tools = result.get("opencode_tool_reward")
+    if tools is None:
+        return None
+    breakdown = RewardBreakdown(
+        base_reward=float(tools["base_reward"]),
+        auxiliary_reward=float(tools["auxiliary_reward"]),
+    )
+    if not math.isclose(
+        breakdown.base_reward + breakdown.auxiliary_reward,
+        float(result["reward"]),
+        rel_tol=1e-5,
+        abs_tol=1e-6,
+    ):
+        raise ValueError("OpenCode base and auxiliary rewards must sum to reward")
+    return breakdown

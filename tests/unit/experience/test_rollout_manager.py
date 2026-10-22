@@ -1945,6 +1945,34 @@ def _make_capture_manager(
 
 
 class TestGenerateForFinalizationFlow:
+    @pytest.mark.parametrize(
+        "granularity", [RecoveryGranularity.SIBLING, RecoveryGranularity.PROMPT_GROUP]
+    )
+    def test_request_preserves_reward_components(
+        self, monkeypatch, granularity
+    ) -> None:
+        from nemo_rl.experience.metric_utils import RewardBreakdown
+
+        original_record = _receipt_record
+
+        def record_with_components(*args, **kwargs):
+            record = original_record(*args, **kwargs)
+            for completion in record.completions:
+                completion.env_extras["opencode_tool_reward"] = {
+                    "base_reward": 0.4,
+                    "auxiliary_reward": 0.1,
+                }
+            return record
+
+        monkeypatch.setitem(globals(), "_receipt_record", record_with_components)
+        buf = _FakeCaptureBuffer()
+        mgr = _make_capture_manager(
+            buf, recovery_config=RolloutRecoveryConfig(default_granularity=granularity)
+        )
+        request = _run(mgr.generate_for_finalization({"prompt": "p", "idx": 0}))
+        assert request.rewards == (0.5, 0.5)
+        assert request.reward_breakdowns == (RewardBreakdown(0.4, 0.1),) * 2
+
     def test_request_carries_env_mask_flags(self):
         buf = _FakeCaptureBuffer()
         mgr = _make_capture_manager(

@@ -26,9 +26,11 @@ import copy
 import dataclasses
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Optional, Self, TypeAlias
+
+from nemo_rl.experience.metric_utils import RewardBreakdown
 
 if TYPE_CHECKING:
     from nemo_rl.algorithms.async_utils.replay_buffer import DataPlaneMutationCut
@@ -71,6 +73,7 @@ _ATTEMPT_STATE_FIELDS = frozenset(
         "status",
         "receipt",
         "reward",
+        "reward_breakdown",
         "mask_sample",
         "staging_keys",
     }
@@ -176,6 +179,8 @@ class RolloutAttemptRecord:
     status: RolloutAttemptStatus
     receipt: Optional[dict[str, Any]] = None
     reward: Optional[float] = None
+    # None preserves checkpoints written before component logging existed.
+    reward_breakdown: RewardBreakdown | None = None
     mask_sample: Optional[bool] = None
     staging_keys: list[str] = field(default_factory=list)
 
@@ -282,6 +287,7 @@ class SiblingSealResult:
     receipt: Optional[dict[str, Any]]
     reward: float
     mask_sample: bool
+    reward_breakdown: RewardBreakdown | None = None
 
 
 def _new_attempt() -> RolloutAttemptRecord:
@@ -448,6 +454,7 @@ class RolloutRecoveryLedger:
             attempt.status = RolloutAttemptStatus.ABANDONED
             attempt.receipt = None
             attempt.reward = None
+            attempt.reward_breakdown = None
             attempt.staging_keys.clear()
         record.status = PromptGroupStatus.GENERATING
 
@@ -578,6 +585,7 @@ class RolloutRecoveryLedger:
         receipt: Optional[dict[str, Any]],
         reward: float,
         mask_sample: bool,
+        reward_breakdown: RewardBreakdown | None = None,
     ) -> None:
         """Record one streamed sibling receipt as soon as the row arrives."""
         cut.require_live()
@@ -604,6 +612,7 @@ class RolloutRecoveryLedger:
             if (
                 attempt.receipt == receipt
                 and attempt.reward == float(reward)
+                and attempt.reward_breakdown == reward_breakdown
                 and attempt.mask_sample is mask_sample
                 and attempt.staging_keys == staging_keys
             ):
@@ -621,6 +630,7 @@ class RolloutRecoveryLedger:
 
         attempt.receipt = copy.deepcopy(receipt)
         attempt.reward = float(reward)
+        attempt.reward_breakdown = reward_breakdown
         attempt.mask_sample = mask_sample
         attempt.staging_keys = staging_keys
         attempt.status = RolloutAttemptStatus.SEALED
@@ -690,6 +700,7 @@ class RolloutRecoveryLedger:
         for attempt, result, staging_keys in validated:
             attempt.receipt = copy.deepcopy(result.receipt)
             attempt.reward = float(result.reward)
+            attempt.reward_breakdown = result.reward_breakdown
             attempt.mask_sample = result.mask_sample
             attempt.staging_keys = staging_keys
             attempt.status = RolloutAttemptStatus.SEALED
@@ -865,6 +876,9 @@ class RolloutRecoveryLedger:
                                     "status": attempt.status.value,
                                     "receipt": copy.deepcopy(attempt.receipt),
                                     "reward": attempt.reward,
+                                    "reward_breakdown": asdict(attempt.reward_breakdown)
+                                    if attempt.reward_breakdown is not None
+                                    else None,
                                     "mask_sample": attempt.mask_sample,
                                     "staging_keys": list(attempt.staging_keys),
                                 }
@@ -1052,6 +1066,12 @@ class RolloutRecoveryLedger:
                     ) from error
                 receipt = attempt_state.get("receipt")
                 reward = attempt_state.get("reward")
+                breakdown_state = attempt_state.get("reward_breakdown")
+                reward_breakdown = (
+                    RewardBreakdown(**breakdown_state)
+                    if breakdown_state is not None
+                    else None
+                )
                 mask_sample = attempt_state.get("mask_sample")
                 staging_keys = attempt_state.get("staging_keys")
                 if not isinstance(staging_keys, list) or not all(
@@ -1082,6 +1102,7 @@ class RolloutRecoveryLedger:
                 elif (
                     receipt is not None
                     or reward is not None
+                    or reward_breakdown is not None
                     or mask_sample is not None
                     or staging_keys
                 ):
@@ -1092,6 +1113,7 @@ class RolloutRecoveryLedger:
                         status=attempt_status,
                         receipt=copy.deepcopy(receipt),
                         reward=float(reward) if reward is not None else None,
+                        reward_breakdown=reward_breakdown,
                         mask_sample=mask_sample,
                         staging_keys=list(staging_keys),
                     )

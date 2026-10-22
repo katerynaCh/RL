@@ -1097,3 +1097,49 @@ def test_restore_rejects_inconsistent_shared_admission_state() -> None:
 
     with pytest.raises(ValueError, match="disagree on phase or target_step"):
         _load(RolloutRecoveryLedger(), state)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reward_breakdown_survives_recovery_with_legacy_compatibility(
+    legacy: bool,
+) -> None:
+    from nemo_rl.experience.metric_utils import RewardBreakdown
+
+    ledger = RolloutRecoveryLedger()
+    _reserve(
+        ledger,
+        group_id="rewards",
+        admission_id="a",
+        prompt_id="7",
+        prompt_payload=_prompt(),
+        expected_generations=1,
+        target_step=0,
+        start_weight_version=0,
+        task_source=None,
+        recovery_granularity=RecoveryGranularity.SIBLING,
+        admitted=True,
+    )
+    _mutate(lambda cut: ledger.mark_group_dispatched(cut, "rewards"))
+    gate_id = ledger.get_group("rewards").gate_rollout_id(0)
+    breakdown = RewardBreakdown(1.0, -0.05)
+    _mutate(
+        lambda cut: ledger.mark_sibling_sealed(
+            cut,
+            "rewards",
+            generation_index=0,
+            gate_rollout_id=gate_id,
+            receipt=None,
+            reward=0.95,
+            mask_sample=False,
+            reward_breakdown=breakdown,
+        )
+    )
+    state = ledger.state_dict()
+    if legacy:
+        state["groups"][0]["siblings"][0]["attempts"][0].pop("reward_breakdown")
+    restored = RolloutRecoveryLedger()
+    _load(restored, state)
+    attempt = restored.get_group("rewards").siblings[0].current_attempt
+    assert attempt.reward == 0.95
+    assert attempt.reward_breakdown == (None if legacy else breakdown)
+    assert restored.finalization_inputs("rewards")[3] == [0.95]

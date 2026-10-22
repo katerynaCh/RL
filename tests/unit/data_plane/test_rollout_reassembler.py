@@ -896,3 +896,29 @@ def test_deferred_chain_hash_corruption_rejects_the_row(
     )
     assert not row.valid
     assert (row.rejection_reason or "").startswith("rebuild_failed:chain_hash_mismatch")
+
+
+def test_finalizer_persists_reward_components_in_canonical_tags(tq_client, partitions):
+    from nemo_rl.experience.metric_utils import RewardBreakdown
+
+    receipt, _ = _stage_fixture(tq_client, "worked_example", rollout_id="reward_g0")
+    result = _finalizer(tq_client).finalize_group(
+        "reward",
+        ["reward_g0", "reward_g1"],
+        [receipt, None],
+        [1.1, 0.0],
+        mask_sample=[False, False],
+        fallback_weight_version=4,
+        prompt_idx=7,
+        reward_breakdowns=[RewardBreakdown(1.0, 0.1), None],
+    )
+    assert result.meta.tags[0]["reward_breakdown"] == {
+        "base_reward": 1.0,
+        "auxiliary_reward": 0.1,
+    }
+    assert "reward_breakdown" not in result.meta.tags[1]
+    rows = _fetch_rows(tq_client, result.meta.sample_ids)
+    assert torch.as_tensor(rows["total_reward"]).flatten().tolist() == pytest.approx(
+        [1.1, 0.0]
+    )
+    assert torch.as_tensor(rows["sample_mask"]).flatten().tolist() == [1.0, 0.0]

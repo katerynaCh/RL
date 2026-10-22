@@ -161,6 +161,7 @@ from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.refit_watchdog import RefitAborted, is_refit_context_lost
 from nemo_rl.environments.nemo_gym import should_use_nemo_gym
 from nemo_rl.experience.failures import RolloutStall
+from nemo_rl.experience.metric_utils import RewardBreakdown
 from nemo_rl.experience.payload import VIOLATION_TAG_KEYS
 from nemo_rl.experience.rollout_manager import RolloutOutcome
 from nemo_rl.experience.rollout_recovery import (
@@ -691,6 +692,7 @@ class SingleControllerActor:
         self._current_epoch: int = actor_args.save_state.current_epoch
         self._step_log_dict: dict[str, list] = {
             "rewards": [],
+            "reward_breakdowns": [],
             "sample_masks": [],
             "masked_advantages": [],
             "num_mask_sample_filtered": [],
@@ -5332,6 +5334,13 @@ class SingleControllerActor:
 
         response_advantages = torch.masked_select(advantages, mask.bool())
         self._step_log_dict["rewards"].append(rewards.detach().cpu())
+        row_tags = meta.tags if meta.tags is not None else [{} for _ in meta.sample_ids]
+        self._step_log_dict["reward_breakdowns"].extend(
+            RewardBreakdown(**tag["reward_breakdown"])
+            if tag.get("reward_breakdown") is not None
+            else None
+            for tag in row_tags
+        )
         self._step_log_dict["sample_masks"].append(final_sample_mask.detach().cpu())
         if self._teacher_logprobs_required:
             valid = response_advantages.detach().double()

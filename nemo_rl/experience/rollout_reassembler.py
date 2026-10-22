@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, cast
 
 import torch
@@ -57,6 +57,7 @@ from nemo_rl.data_plane.tq_token_sink import (
     TQTokenSink,
     TQTokenSource,
 )
+from nemo_rl.experience.metric_utils import RewardBreakdown
 from nemo_rl.experience.payload import pack_payload
 from nemo_rl.experience.route_assembly import (
     ROUTE_MISSING_SENTINEL,
@@ -558,6 +559,7 @@ class RolloutReassembler:
         prompt_idx: int,
         loss_multiplier: float = 1.0,
         canonical_sample_ids: Optional[list[str]] = None,
+        reward_breakdowns: list[RewardBreakdown | None] | None = None,
     ) -> FinalizedGroup:
         """Publish exactly N canonical rows for one prompt group.
 
@@ -578,6 +580,8 @@ class RolloutReassembler:
         assert len(rollout_ids) == len(receipts) == len(rewards) == len(mask_sample), (
             "rollout_ids, receipts, rewards, and mask_sample must be parallel"
         )
+        if reward_breakdowns is not None and len(reward_breakdowns) != len(rollout_ids):
+            raise ValueError("reward_breakdowns must align with rollout_ids")
         if canonical_sample_ids is None:
             canonical_sample_ids = rollout_ids
         assert len(canonical_sample_ids) == len(rollout_ids), (
@@ -789,6 +793,10 @@ class RolloutReassembler:
         if self._capture_media:
             for tag in tags:
                 tag[MEDIA_VALIDATION_TAG] = MEDIA_VALIDATION_VERSION
+        if reward_breakdowns is not None:
+            for tag, breakdown in zip(tags, reward_breakdowns, strict=True):
+                if breakdown is not None:
+                    tag["reward_breakdown"] = asdict(breakdown)
         if self._defer_routed_experts_to_policy:
             encoded_sizes = 0
             span_count = 0

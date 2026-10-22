@@ -829,6 +829,7 @@ def test_advantage_stage_composes_all_filters_before_computing_advantages(
     ctrl._message_level_advantage_penalties_enabled = True
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "sequence_lengths": [],
@@ -840,6 +841,8 @@ def test_advantage_stage_composes_all_filters_before_computing_advantages(
         task_name="train",
         sample_ids=[f"sample-{i}" for i in range(batch_size)],
         fields=list(data.keys()),
+        tags=[{"reward_breakdown": {"base_reward": 1.0, "auxiliary_reward": 0.1}}]
+        + [{} for _ in range(batch_size - 1)],
     )
 
     result_meta, has_valid_training_tokens = asyncio.run(ctrl._advantage_stage(meta))
@@ -868,6 +871,10 @@ def test_advantage_stage_composes_all_filters_before_computing_advantages(
     assert estimator.mask[1:].count_nonzero() == 0
     torch.testing.assert_close(estimator.reward_valid_mask, torch.ones(batch_size))
     assert ctrl._step_log_dict["num_mask_sample_filtered"] == [1]
+    breakdowns = ctrl._step_log_dict["reward_breakdowns"]
+    assert breakdowns[0].base_reward == 1.0
+    assert breakdowns[0].auxiliary_reward == 0.1
+    assert breakdowns[1:] == [None] * (batch_size - 1)
     metrics = ctrl._step_log_dict["seq_logprob_error_metrics"]
     assert len(metrics) == 1
     assert metrics[0]["num_masked_seqs_by_logprob_error"] == 1
@@ -925,6 +932,7 @@ def test_advantage_stage_writes_each_sample_filter_without_seq_threshold(
     )
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "num_mask_sample_filtered": [],
@@ -990,6 +998,7 @@ def test_advantage_stage_reports_seq_logprob_metrics_without_masking() -> None:
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "num_mask_sample_filtered": [],
@@ -1060,6 +1069,7 @@ def test_advantage_stage_clips_training_values_and_metrics() -> None:
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "num_mask_sample_filtered": [],
@@ -1124,6 +1134,7 @@ def test_advantage_stage_skips_estimator_when_seq_mask_removes_whole_chunk(
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "num_mask_sample_filtered": [],
@@ -1186,6 +1197,7 @@ def test_advantage_stage_skips_preexisting_empty_mask_without_seq_threshold() ->
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "num_mask_sample_filtered": [],
@@ -1271,6 +1283,7 @@ def test_opd_advantage_stage_reads_teacher_and_student_logprobs() -> None:
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "sequence_lengths": [],
@@ -1663,6 +1676,7 @@ def _train_pump_controller(*, sampler) -> object:
     ctrl._finalizer_metrics_by_group = {}
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "sequence_lengths": [],
@@ -2584,6 +2598,7 @@ def test_advantage_stage_writes_gae_returns_alongside_advantages() -> None:
     ctrl._message_level_advantage_penalties_enabled = False
     ctrl._step_log_dict = {
         "rewards": [],
+        "reward_breakdowns": [],
         "sample_masks": [],
         "masked_advantages": [],
         "sequence_lengths": [],

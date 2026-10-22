@@ -24,6 +24,7 @@ from tensordict import TensorDict
 
 from nemo_rl.algorithms.metric_utils import REWARD_KEY
 from nemo_rl.data_plane import KVBatchMeta
+from nemo_rl.experience.metric_utils import RewardBreakdown
 
 # Reduction rules for all_mb_metrics. Mirror grpo.py / grpo_sync.py.
 _MB_METRIC_MIN: frozenset[str] = frozenset(
@@ -116,6 +117,7 @@ def reduce_advantage_pump_metrics(
     sequence_lengths: list[int],
     *,
     sample_masks: list[torch.Tensor] | None = None,
+    reward_breakdowns: list[RewardBreakdown | None] | None = None,
     seq_logprob_error_metrics: list[dict[str, float]] | None = None,
     num_mask_sample_filtered: list[int] | None = None,
     num_invalid_tool_calls: list[int] | None = None,
@@ -134,6 +136,8 @@ def reduce_advantage_pump_metrics(
             0). Weights ``reward`` so it averages over trained rows only,
             matching what the advantage estimator's baseline already excludes.
             None keeps the legacy unweighted mean.
+        reward_breakdowns: Logging-only components aligned with concatenated rewards.
+            Missing legacy components suppress the split until valid-row coverage is complete.
         seq_logprob_error_metrics: Sequence-error metrics and their aggregation
             counts, one record per streaming chunk.
         num_mask_sample_filtered: Environment-flagged sample counts, one per
@@ -161,6 +165,39 @@ def reduce_advantage_pump_metrics(
             )
         else:
             out["reward"] = float(cat_rewards.mean())
+    if rewards and reward_breakdowns is not None:
+        if len(reward_breakdowns) != cat_rewards.numel():
+            raise ValueError("reward_breakdowns must align with per-row rewards")
+        weights = cat_masks if sample_masks else torch.ones_like(cat_rewards)
+        known = torch.tensor(
+            [b is not None for b in reward_breakdowns], dtype=weights.dtype
+        )
+        denominator = weights.sum()
+        coverage = (
+            float((weights * known).sum() / denominator) if denominator > 0 else 0.0
+        )
+        out["reward_breakdown_coverage"] = coverage
+        # Restored old rollouts may lack components. Do not invent values or
+        # publish a partial mean that is incomparable with train/reward.
+        if denominator > 0 and bool(torch.all((weights == 0) | known.bool())):
+            base = torch.tensor(
+                [b.base_reward if b is not None else 0.0 for b in reward_breakdowns]
+            )
+            auxiliary = torch.tensor(
+                [
+                    b.auxiliary_reward if b is not None else 0.0
+                    for b in reward_breakdowns
+                ]
+            )
+            valid = weights != 0
+            if not torch.allclose(
+                (base + auxiliary)[valid], cat_rewards[valid], rtol=1e-5, atol=1e-6
+            ):
+                raise ValueError(
+                    "Logged reward components must sum to the training reward"
+                )
+            out["base_reward"] = float((base * weights).sum() / denominator)
+            out["auxiliary_reward"] = float((auxiliary * weights).sum() / denominator)
     if masked_advantages:
         cat = torch.cat([a.flatten() for a in masked_advantages])
         if cat.numel() > 0:
