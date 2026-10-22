@@ -1,0 +1,7 @@
+# Install in the shared runtime overlay with uv pip --no-deps.
+# Every Ray process imports this overlay through PYTHONPATH.
+ray==2.58.0
+aiohttp==3.14.4
+PyJWT==2.15.1
+opencv-python-headless==4.13.0.92
+math-verify==0.8.0
