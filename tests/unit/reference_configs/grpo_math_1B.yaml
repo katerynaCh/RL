@@ -194,6 +194,8 @@ policy:
     enabled: false
     model_overrides: {}
     checkpoint:
+      # True exchanges shards over DP; false lets each rank read its own shards.
+      fully_parallel_load: true
       async_save: true
       ckpt_assume_constant_structure: true
     use_fused_linear_logprobs: false

@@ -2801,6 +2801,19 @@ class TestCreateCheckpointConfig:
         assert checkpoint_config.fully_parallel_load is True
         assert checkpoint_config.load_rng is False
 
+    @pytest.mark.parametrize("fully_parallel_load", [False, True])
+    def test_fully_parallel_load_override(self, fully_parallel_load):
+        from nemo_rl.models.megatron.setup import _create_checkpoint_config
+
+        checkpoint_config = _create_checkpoint_config(
+            "/pretrained",
+            None,
+            None,
+            ckpt_cfg={"fully_parallel_load": fully_parallel_load},
+        )
+
+        assert checkpoint_config.fully_parallel_load is fully_parallel_load
+
     def test_missing_ckpt_cfg_defaults_to_sync_save(self, tmp_path):
         """An absent checkpoint block keeps Megatron Bridge's default (sync save).
 
@@ -4210,6 +4223,7 @@ class TestSetupReferenceModelState:
     @patch("nemo_rl.models.megatron.setup.clear_global_router_replay_instances")
     @patch("nemo_rl.models.megatron.setup.load_checkpoint")
     @patch("nemo_rl.models.megatron.setup.HAVE_FSDP2", False)
+    @pytest.mark.parametrize("fully_parallel_load", [False, True])
     def test_setup_reference_model(
         self,
         mock_load_checkpoint,
@@ -4220,6 +4234,7 @@ class TestSetupReferenceModelState:
         mock_init_ckpt_context,
         mock_pg_collection,
         capsys,
+        fully_parallel_load,
     ):
         """Test setup_reference_model_state when checkpoint exists."""
         from nemo_rl.models.megatron.setup import setup_reference_model_state
@@ -4230,6 +4245,7 @@ class TestSetupReferenceModelState:
 
         mock_megatron_cfg = MagicMock()
         mock_megatron_cfg.dist.use_torch_fsdp2 = False
+        mock_megatron_cfg.checkpoint.fully_parallel_load = fully_parallel_load
 
         # Create mock model with state dict
         mock_model = MagicMock()
@@ -4251,6 +4267,12 @@ class TestSetupReferenceModelState:
             config=config,
             megatron_cfg=mock_megatron_cfg,
             pretrained_path="/path/to/pretrained",
+        )
+
+        # Reference loading must use the same setting as policy loading.
+        assert (
+            mock_init_ckpt_context.call_args.args[0].fully_parallel_load
+            is fully_parallel_load
         )
 
         # Verify checkpoint was loaded

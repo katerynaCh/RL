@@ -367,6 +367,8 @@ class MegatronCheckpointConfig(TypedDict, total=False):
     # Skip metadata recomputation after the first two saves when the sharded
     # state structure is constant across steps.
     ckpt_assume_constant_structure: bool
+    # False reads each rank's shards directly instead of exchanging them over DP.
+    fully_parallel_load: bool
     # Field names match megatron.bridge CheckpointConfig (ckpt_ prefix).
     ckpt_fully_parallel_save_process_group: str  # "dp" | "ep_dp"
     ckpt_fully_parallel_load_process_group: str  # "dp" | "ep_dp"

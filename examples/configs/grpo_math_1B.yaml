@@ -194,6 +194,8 @@ policy:
     # provider before model instantiation. Do not duplicate first-class fields.
     model_overrides: {}
     checkpoint:
+      # True exchanges shards over DP; false lets each rank read its own shards.
+      fully_parallel_load: true
       async_save: true
       ckpt_assume_constant_structure: true
     # Compute next-token logprobs directly from hidden states with a chunked
