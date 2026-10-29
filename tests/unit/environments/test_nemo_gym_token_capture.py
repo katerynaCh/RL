@@ -97,7 +97,7 @@ def test_receipt_postprocess_without_a_terminal_response_id_uses_the_heuristic()
         _manifest_record("c2", parent="c1"),
     ]
     env._control = AsyncMock(
-        return_value={"rollout_id": "r0", "records": records, "failures": []}
+        return_value={"capture_key": "r0", "records": records, "failures": []}
     )
 
     result = asyncio.run(
@@ -121,7 +121,7 @@ def test_receipt_postprocess_fetches_manifest_and_selects_terminal_row() -> None
         _manifest_record("c2", parent="c1"),
     ]
     env._control = AsyncMock(
-        return_value={"rollout_id": "r0", "records": records, "failures": []}
+        return_value={"capture_key": "r0", "records": records, "failures": []}
     )
 
     result = asyncio.run(
@@ -137,7 +137,11 @@ def test_receipt_postprocess_fetches_manifest_and_selects_terminal_row() -> None
         "/training-token-capture/control/rollouts/r0/manifest",
     )
     receipt = result["receipt"]
-    assert receipt["rollout_id"] == "r0"
+    assert receipt["capture_key"] == "r0"
+    # Gym is optional outside the token-capture test lane.
+    from nemo_gym.token_id_capture.staging.records import RolloutReceipt
+
+    assert RolloutReceipt.model_validate(receipt).capture_key == "r0"
     assert receipt["terminal_model_call_id"] == "c2"
     assert receipt["terminal_selection"] == "declared"
     assert receipt["capture_poisoned"] is False
@@ -225,7 +229,7 @@ def test_partial_group_stream_keeps_siblings_after_failed_episodes(
 def test_receipt_assembly_poisons_on_failure_rows() -> None:
     env = _capture_env()
     manifest = {
-        "rollout_id": "r0",
+        "capture_key": "r0",
         "records": [_manifest_record("c1")],
         "failures": [{"model_call_id": "c2", "reason": "worker_capture_failed"}],
     }
@@ -245,7 +249,7 @@ def test_receipt_assembly_ignores_uncommitted_call_failures_off_the_terminal_cha
     exhausted the context window. It must not poison the verified chain."""
     env = _capture_env()
     manifest = {
-        "rollout_id": "r0",
+        "capture_key": "r0",
         "records": [
             _manifest_record("c1"),
             _manifest_record("c2", parent="c1"),
@@ -272,7 +276,7 @@ def test_receipt_assembly_still_poisons_when_the_terminal_call_died_uncommitted(
     is no terminal row — the missing-terminal check must mask the rollout."""
     env = _capture_env()
     manifest = {
-        "rollout_id": "r0",
+        "capture_key": "r0",
         "records": [_manifest_record("c1")],
         "failures": [
             {
@@ -291,7 +295,7 @@ def test_receipt_assembly_still_poisons_when_the_terminal_call_died_uncommitted(
 def test_receipt_assembly_poisons_when_the_terminal_row_is_missing() -> None:
     env = _capture_env()
     manifest = {
-        "rollout_id": "r0",
+        "capture_key": "r0",
         "records": [_manifest_record("c1")],
         "failures": [],
     }
@@ -314,7 +318,7 @@ def test_receipt_assembly_heuristic_eliminates_abandoned_retry() -> None:
         _manifest_record("c2r", parent="c1"),
         _manifest_record("c3", parent="c2"),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=1.0
     )
@@ -330,7 +334,7 @@ def test_receipt_assembly_heuristic_masks_a_final_call_retry() -> None:
         _manifest_record("c2", parent="c1"),
         _manifest_record("c2r", parent="c1"),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -341,7 +345,7 @@ def test_receipt_assembly_heuristic_masks_a_final_call_retry() -> None:
 
 def test_receipt_assembly_heuristic_masks_an_empty_manifest() -> None:
     env = _capture_env()
-    manifest = {"rollout_id": "r0", "records": [], "failures": []}
+    manifest = {"capture_key": "r0", "records": [], "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -354,7 +358,7 @@ def test_receipt_assembly_heuristic_masks_invalid_manifest_rows() -> None:
     env = _capture_env()
     bad = _manifest_record("c1")
     bad["delta_len"] = 0  # violates the CallRecord length contract
-    manifest = {"rollout_id": "r0", "records": [bad], "failures": []}
+    manifest = {"capture_key": "r0", "records": [bad], "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -371,7 +375,7 @@ def test_receipt_assembly_ships_only_rows_that_parse() -> None:
     good = _manifest_record("c1")
     bad = _manifest_record("c2", parent="c1")
     bad["delta_len"] = 0  # violates the CallRecord length contract
-    manifest = {"rollout_id": "r0", "records": [good, bad], "failures": []}
+    manifest = {"capture_key": "r0", "records": [good, bad], "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -390,7 +394,7 @@ def test_finalizer_cleans_good_rows_when_a_manifest_row_is_invalid() -> None:
     good = _manifest_record("c1")
     bad = _manifest_record("c2", parent="c1")
     del bad["chain_hash"]
-    manifest = {"rollout_id": "r0", "records": [good, bad], "failures": []}
+    manifest = {"capture_key": "r0", "records": [good, bad], "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -417,7 +421,7 @@ def test_receipt_assembly_keeps_dead_branch_siblings_in_the_manifest() -> None:
         _manifest_record("c2", parent="c1"),
         _manifest_record("c2r", parent="c1"),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id="resp-c2r", reward=1.0
     )
@@ -448,7 +452,7 @@ def test_response_id_witness_resolves_a_final_call_retry() -> None:
         _manifest_record("c2", parent="c1", cumulative_hash="a" * 64),
         _manifest_record("c2r", parent="c1", cumulative_hash="c" * 64),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0",
         manifest,
@@ -467,7 +471,7 @@ def test_unattributed_scored_response_falls_back_to_the_heuristic() -> None:
         _manifest_record("c1"),
         _manifest_record("c2", parent="c1"),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0",
         manifest,
@@ -485,7 +489,7 @@ def test_receipt_assembly_leaves_terminal_selection_unset_on_invalid_row() -> No
     invalid = _manifest_record("c2", parent="c1")
     del invalid["chain_hash"]  # CallRecord requires it: the manifest fails to parse
     records = [_manifest_record("c1"), invalid]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0", manifest, terminal_response_id=None, reward=0.0
     )
@@ -505,7 +509,7 @@ def test_declared_and_response_id_witnesses_corroborate() -> None:
         _manifest_record("c1"),
         _manifest_record("c2", parent="c1"),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0",
         manifest,
@@ -530,7 +534,7 @@ def test_witness_disagreement_masks_a_retry_instead_of_guessing() -> None:
         _manifest_record("c2", parent="c1", cumulative_hash="a" * 64),
         _manifest_record("c2r", parent="c1", cumulative_hash="c" * 64),
     ]
-    manifest = {"rollout_id": "r0", "records": records, "failures": []}
+    manifest = {"capture_key": "r0", "records": records, "failures": []}
     receipt = env._assemble_receipt(
         "r0",
         manifest,
@@ -551,7 +555,7 @@ def test_postprocess_passes_the_scored_response_to_attribution() -> None:
         _manifest_record("c2r", parent="c1", cumulative_hash="c" * 64),
     ]
     env._control = AsyncMock(
-        return_value={"rollout_id": "r0", "records": records, "failures": []}
+        return_value={"capture_key": "r0", "records": records, "failures": []}
     )
     result = asyncio.run(
         env._postprocess_receipt_mode(

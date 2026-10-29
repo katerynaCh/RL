@@ -1034,7 +1034,7 @@ def test_result_to_completion_drops_mask_flag_when_gate_off():
 def _mask_gate_receipt_result():
     return {
         "message_log": [],
-        "receipt": {"rollout_id": "r0", "manifest": []},
+        "receipt": {"capture_key": "r0", "manifest": []},
         "rollout_id": "r0",
         "full_result": {
             "reward": 1.0,
@@ -1924,7 +1924,7 @@ def _make_capture_manager(
             )
             receipts = [
                 {
-                    "rollout_id": rollout_id,
+                    "capture_key": rollout_id,
                     "manifest": [{"staging_key": f"{rollout_id}/call"}],
                 }
                 for rollout_id in selected_ids
@@ -2013,7 +2013,7 @@ class TestGenerateForFinalizationFlow:
         assert request.prompt_idx == 0
         assert request.rollout_ids == tuple(attempt_ids)
         assert request.canonical_sample_ids == tuple(canonical_ids)
-        assert [r["rollout_id"] for r in request.receipts] == attempt_ids
+        assert [r["capture_key"] for r in request.receipts] == attempt_ids
         assert request.rewards == (0.5, 0.5)
         assert request.mask_sample == (False, False)
         assert request.loss_multiplier == 0.25
@@ -2054,7 +2054,7 @@ class TestGenerateForFinalizationFlow:
                 generation_index = generation_indices[0]
                 rollout_id = rollout_ids[generation_index]
                 receipt = {
-                    "rollout_id": rollout_id,
+                    "capture_key": rollout_id,
                     "manifest": [{"staging_key": f"{rollout_id}/call"}],
                 }
                 completion = _receipt_record([rollout_id], [receipt]).completions[0]
@@ -2170,7 +2170,7 @@ class TestGenerateForFinalizationFlow:
                 for generation_index in indices:
                     rollout_id = rollout_ids[generation_index]
                     receipt = {
-                        "rollout_id": rollout_id,
+                        "capture_key": rollout_id,
                         "manifest": [{"staging_key": f"{rollout_id}/call"}],
                     }
                     completion = _receipt_record([rollout_id], [receipt]).completions[0]
